@@ -2,11 +2,12 @@ package main
 
 type Message struct {
 	Sender   *Client `json:",omitempty"`
-	SrvError error
+	SrvError string `json:",omitempty"`
 
 	Hello      *HelloMessage      `json:",omitempty"`
 	UserSync   *UserSyncMessage   `json:",omitempty"`
 	RoomUpdate *RoomUpdateMessage `json:",omitempty"`
+	RoomP2P    *RoomP2PMessage    `json:",omitempty"`
 	Record     *RecordMessage     `json:",omitempty"`
 	RecordSync *RecordSyncMessage `json:",omitempty"`
 }
@@ -15,7 +16,7 @@ type Message struct {
 // on first connect to indicate a successful connection.
 type HelloMessage struct {
 	Username string
-	Settings *RoomSettings
+	Room     *Room
 }
 
 // UserSyncMessage is exclusively sent by the server to
@@ -33,6 +34,19 @@ type UserSyncMessage struct {
 // this update over WebRTC to joined clients.
 type RoomUpdateMessage struct {
 	Settings *RoomSettings
+}
+
+// RoomP2PMessage is sent by the client for WebRTC signaling and
+// forwarded by the server to the client with the given username,
+// flipping the field around to contain the sender's name.
+// todo(rubenseyer): mechanism for reporting success to server
+// todo(rubenseyer): mechanism for leaving to own room
+type RoomP2PMessage struct {
+	Username  string
+	RoomId    string
+	Offer     string
+	Answer    string
+	Candidate string
 }
 
 // RecordMessage is sent by the client to indicate a

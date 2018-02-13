@@ -1,25 +1,25 @@
 package main
 
 import (
-	"net/http"
-	"sync"
-	"net"
-	"log"
-	"strings"
-	"os"
-	"github.com/gorilla/websocket"
-	"time"
-	"errors"
 	"container/ring"
-	"io/ioutil"
 	"encoding/json"
 	"html"
+	"io/ioutil"
+	"log"
+	"net"
+	"net/http"
+	"os"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/gorilla/websocket"
 	"github.com/teris-io/shortid"
 )
 
 var upgrader = &websocket.Upgrader{
 	HandshakeTimeout: 20 * time.Second,
-	Subprotocols: []string{"mines", "binary"},
+	Subprotocols:     []string{"mines", "binary"},
 	CheckOrigin: func(r *http.Request) bool {
 		return true
 	},
@@ -44,6 +44,8 @@ type Server struct {
 	ch    chan *Message
 	leave chan *Client
 	done  chan struct{}
+
+	statsticker *time.Ticker
 }
 
 func (s *Server) loop() {
@@ -58,29 +60,39 @@ func (s *Server) loop() {
 				s.handleNewClient(msg.Sender, msg.Hello)
 			} else if msg.RoomUpdate != nil {
 				s.handleRoomUpdate(msg.Sender, msg.RoomUpdate)
+			} else if msg.RoomP2P != nil {
+				s.handleRoomP2P(msg.Sender, msg.RoomP2P)
 			} else if msg.Record != nil {
 				s.handleRecord(msg.Sender, msg.Record)
 			}
+		case <-s.statsticker.C:
+			s.cmutex.RLock()
+			s.rmutex.RLock()
+			if len(s.clients) > 0 {
+				log.Printf("Currently %v clients online in %v rooms", len(s.clients), len(s.rooms))
+			}
+			s.rmutex.RUnlock()
+			s.cmutex.RUnlock()
 		}
 	}
 }
 
 func (s *Server) handleNewClient(c *Client, m *HelloMessage) {
-	if m.Settings == nil {
+	if m.Room == nil {
 		log.Printf("Failed to initialize new client: no settings sent")
-		c.Disconnect(&Message{SrvError: errors.New("missing settings")})
+		_ = c.Disconnect(&Message{SrvError: "missing settings"})
 		return
 	}
 	if c.Username != html.EscapeString(c.Username) {
 		log.Printf("Failed to initialize new client: unsafe username")
-		c.Disconnect(&Message{SrvError: errors.New("invalid username")})
+		_ = c.Disconnect(&Message{SrvError: "invalid username"})
 		return
 	}
 
 	s.cmutex.Lock()
 	if _, ok := s.clients[c.Username]; ok {
 		log.Printf("Failed to initialize new client: username taken")
-		c.Disconnect(&Message{SrvError: errors.New("username taken")})
+		_ = c.Disconnect(&Message{SrvError: "username taken"})
 		s.cmutex.Unlock()
 		return
 	} else {
@@ -94,20 +106,21 @@ func (s *Server) handleNewClient(c *Client, m *HelloMessage) {
 	go c.writeloop()
 
 	// TODO create client room, more data?
-	r := &Room{c.Username, c.Username, *m.Settings}
+	id := s.roomid.MustGenerate()
+	r := &Room{id, c.Username, m.Room.RoomSettings}
 	s.rmutex.Lock()
-	s.rooms[s.roomid.MustGenerate()] = r
+	s.rooms[id] = r
 	c.CurrentRoom = r
 	s.rmutex.Unlock()
 
+	m.Room = r
 	syncmsg := &Message{Hello: m}
-	// TODO send room state to client? client can just assume it has a room
 	syncmsg.UserSync = s.generateUserSync(c)
 	syncmsg.RecordSync = s.generateRecordsSync()
 	c.send <- syncmsg
 
 	// broadcast connect
-	s.BroadcastExcept(&Message{UserSync: &UserSyncMessage{ map[string]*Client{c.Username: c}, true}}, c)
+	s.BroadcastExcept(&Message{UserSync: &UserSyncMessage{map[string]*Client{c.Username: c}, true}}, c)
 }
 
 func (s *Server) generateUserSync(receiver *Client) (us *UserSyncMessage) {
@@ -126,26 +139,32 @@ func (s *Server) generateUserSync(receiver *Client) (us *UserSyncMessage) {
 func (s *Server) handleDisconnect(c *Client) {
 	log.Printf("<%v> Disconnected.", c.Username)
 	s.cmutex.Lock()
+	_, ok := s.clients[c.Username]
 	delete(s.clients, c.Username)
 	s.cmutex.Unlock()
 
-	us := &UserSyncMessage{ map[string]*Client{c.Username: nil}, true}
-	var newowner *Client
-	for _, member := range s.RoomMembers(c.CurrentRoom) {
-		if newowner == nil {
-
-			newowner = member
-		}
-		// also broadcast users with changed presences due to room change in message
-		us.Presences[member.Username] = member
+	if !ok {
+		return // Ignore if connection was not complete.
 	}
-	if newowner != nil { // change room owner if room not empty
-		c.CurrentRoom.Owner = newowner.Username
-		log.Printf("Room [%v] changed owner to <%v> from <%v>", c.CurrentRoom.Id, newowner.Username, c.Username)
-	} else { // kill room if empty
-		s.rmutex.Lock()
-		delete(s.rooms, c.CurrentRoom.Id)
-		s.rmutex.Unlock()
+
+	us := &UserSyncMessage{map[string]*Client{c.Username: nil}, true}
+	if c.CurrentRoom.Owner == c.Username {
+		var newowner *Client
+		for _, member := range s.RoomMembers(c.CurrentRoom) {
+			if newowner == nil {
+				newowner = member
+			}
+			// also broadcast users with changed presences due to room change in message
+			us.Presences[member.Username] = member
+		}
+		if newowner != nil { // change room owner if room not empty
+			c.CurrentRoom.Owner = newowner.Username
+			log.Printf("Room [%v] changed owner to <%v> from <%v>", c.CurrentRoom.Id, newowner.Username, c.Username)
+		} else { // kill room if empty
+			s.rmutex.Lock()
+			delete(s.rooms, c.CurrentRoom.Id)
+			s.rmutex.Unlock()
+		}
 	}
 
 	s.BroadcastExcept(&Message{UserSync: us}, c)
@@ -178,12 +197,12 @@ func (s *Server) BroadcastExcept(msg *Message, not *Client) {
 }
 
 func (s *Server) Start() error {
-	s.ch    = make(chan *Message)
-	s.leave = make(chan *Client)
-	s.done  = make(chan struct{})
+	s.ch = make(chan *Message)
+	s.leave = make(chan *Client, 10)
+	s.done = make(chan struct{})
 
 	s.clients = make(map[string]*Client)
-	s.rooms   = make(map[string]*Room)
+	s.rooms = make(map[string]*Room)
 
 	sid, err := shortid.New(1, shortid.DefaultABC, uint64(time.Now().UnixNano()))
 	s.roomid = sid
@@ -206,12 +225,14 @@ func (s *Server) Start() error {
 		}
 	}
 	if s.recordsFile == "" {
-		s.recordsBestSolo = make(map[MinesweeperDifficulty]*Record)
+		s.recordsBestSolo = make(map[MinesweeperDifficulty]*Record, 4)
 	}
+
+	s.statsticker = time.NewTicker(10 * time.Minute)
 
 	if strings.HasPrefix(s.addr, "unix:") {
 		path := strings.TrimPrefix(s.addr, "unix:")
-		os.Remove(path)
+		_ = os.Remove(path)
 		l, err := net.Listen("unix", path)
 		if err != nil {
 			log.Fatalf("Listen failed: %v", err)

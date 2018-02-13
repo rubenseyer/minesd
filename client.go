@@ -1,8 +1,12 @@
 package main
 
 import (
-	"sync/atomic"
 	"errors"
+	"log"
+	"sync/atomic"
+
+	"time"
+
 	"github.com/gorilla/websocket"
 )
 
@@ -18,7 +22,14 @@ type Client struct {
 	CurrentRoom *Room
 }
 
+const pingfreq = 1 * time.Minute
+
 func (c *Client) readloop() {
+	c.conn.SetReadDeadline(time.Now().Add(pingfreq))
+	c.conn.SetPongHandler(func(string) error {
+		c.conn.SetReadDeadline(time.Now().Add(pingfreq))
+		return nil
+	})
 	for {
 		if atomic.LoadInt32(&c.disconnected) == 1 {
 			return
@@ -27,6 +38,7 @@ func (c *Client) readloop() {
 		msg, err := c.ReceiveMessage()
 		if err != nil {
 			// TODO handle error/close
+			log.Printf("<%v> recv error: %v", c.Username, err)
 			c.Disconnect(nil)
 			return
 		}
@@ -36,14 +48,21 @@ func (c *Client) readloop() {
 }
 
 func (c *Client) writeloop() {
-	for {
-		msg, ok := <-c.send
-		if !ok {
-			return
-		}
+	pinger := time.NewTicker(pingfreq - 10*time.Second)
 
-		err := c.SendMessage(msg)
+	for {
+		var err error
+		select {
+		case msg, ok := <-c.send:
+			if !ok {
+				return
+			}
+			err = c.SendMessage(msg)
+		case <-pinger.C:
+			err = c.conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(pingfreq))
+		}
 		if err != nil {
+			log.Printf("<%v> send error: %v", c.Username, err)
 			return // an eventual error would be handled in the read loop
 		}
 	}
@@ -70,10 +89,11 @@ func (c *Client) Disconnect(msg *Message) error {
 		return errors.New("client disconnected multiple times")
 	}
 	close(c.send)
+	c.conn.SetWriteDeadline(time.Now().Add(15 * time.Second))
 	if msg != nil {
-		_ = c.SendMessage(msg)
+		_ = c.conn.WriteJSON(msg)
 	}
-	c.leave<-c
+	c.leave <- c
 	_ = c.conn.WriteMessage(websocket.CloseMessage, []byte{})
 	return c.conn.Close()
 }
