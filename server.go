@@ -44,11 +44,13 @@ type Server struct {
 	ch    chan *Message
 	leave chan *Client
 	done  chan struct{}
+	wg    sync.WaitGroup
 
 	statsticker *time.Ticker
 }
 
 func (s *Server) loop() {
+	defer s.wg.Done()
 	for {
 		select {
 		case client := <-s.leave:
@@ -102,18 +104,12 @@ func (s *Server) handleNewClient(c *Client, m *HelloMessage) {
 
 	log.Printf("<%v> Connected.", c.Username)
 
-	go c.readloop()
+	c.wg.Add(1)     // sync writer release
+	go c.readloop() // reads cannot be concurrent either, but they are localized anyway
 	go c.writeloop()
 
 	// TODO create client room, more data?
-	id := s.roomid.MustGenerate()
-	r := &Room{id, c.Username, m.Room.RoomSettings}
-	s.rmutex.Lock()
-	s.rooms[id] = r
-	c.CurrentRoom = r
-	s.rmutex.Unlock()
-
-	m.Room = r
+	m.Room = s.newRoom(c, m.Room.RoomSettings)
 	syncmsg := &Message{Hello: m}
 	syncmsg.UserSync = s.generateUserSync(c)
 	syncmsg.RecordSync = s.generateRecordsSync()
@@ -147,26 +143,8 @@ func (s *Server) handleDisconnect(c *Client) {
 		return // Ignore if connection was not complete.
 	}
 
-	us := &UserSyncMessage{map[string]*Client{c.Username: nil}, true}
-	if c.CurrentRoom.Owner == c.Username {
-		var newowner *Client
-		for _, member := range s.RoomMembers(c.CurrentRoom) {
-			if newowner == nil {
-				newowner = member
-			}
-			// also broadcast users with changed presences due to room change in message
-			us.Presences[member.Username] = member
-		}
-		if newowner != nil { // change room owner if room not empty
-			c.CurrentRoom.Owner = newowner.Username
-			log.Printf("Room [%v] changed owner to <%v> from <%v>", c.CurrentRoom.Id, newowner.Username, c.Username)
-		} else { // kill room if empty
-			s.rmutex.Lock()
-			delete(s.rooms, c.CurrentRoom.Id)
-			s.rmutex.Unlock()
-		}
-	}
-
+	us := s.resyncRoomOnLeave(c.CurrentRoom, c)
+	us.Presences[c.Username] = nil
 	s.BroadcastExcept(&Message{UserSync: us}, c)
 }
 
@@ -254,11 +232,12 @@ func (s *Server) Start() error {
 		} else {
 			err = http.Serve(s.listener, s)
 		}
-		if err != http.ErrServerClosed {
+		if err != http.ErrServerClosed && !isClosedErr(err) {
 			log.Fatalf("Fatal HTTP server error: %v", err)
 		}
 	}()
 
+	s.wg.Add(1)
 	go s.loop()
 
 	return nil
@@ -300,6 +279,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (s *Server) Stop() {
 	// Stop the event loop
 	close(s.done)
+	s.wg.Wait()
 
 	// TODO more cleanup?
 	for _, c := range s.clients {
@@ -318,4 +298,13 @@ func (s *Server) Stop() {
 			}
 		}
 	}
+}
+
+func isClosedErr(err error) bool {
+	// Why is the stdlib like this?
+	// https://github.com/golang/go/issues/4373
+	if err != nil && strings.Contains(err.Error(), "use of closed network connection") {
+		return true
+	}
+	return false
 }

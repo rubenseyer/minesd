@@ -39,8 +39,6 @@ type RoomUpdateMessage struct {
 // RoomP2PMessage is sent by the client for WebRTC signaling and
 // forwarded by the server to the client with the given username,
 // flipping the field around to contain the sender's name.
-// todo(rubenseyer): mechanism for reporting success to server
-// todo(rubenseyer): mechanism for leaving to own room
 type RoomP2PMessage struct {
 	Username  string
 	RoomId    string

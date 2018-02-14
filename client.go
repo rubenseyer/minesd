@@ -3,8 +3,8 @@ package main
 import (
 	"errors"
 	"log"
+	"sync"
 	"sync/atomic"
-
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -17,6 +17,7 @@ type Client struct {
 
 	leave        chan *Client
 	disconnected int32 // atomic
+	wg           sync.WaitGroup
 
 	Username    string
 	CurrentRoom *Room
@@ -48,8 +49,8 @@ func (c *Client) readloop() {
 }
 
 func (c *Client) writeloop() {
+	defer c.wg.Done()
 	pinger := time.NewTicker(pingfreq - 10*time.Second)
-
 	for {
 		var err error
 		select {
@@ -89,6 +90,7 @@ func (c *Client) Disconnect(msg *Message) error {
 		return errors.New("client disconnected multiple times")
 	}
 	close(c.send)
+	c.wg.Wait() // wait for writer do be done to avoid racing
 	c.conn.SetWriteDeadline(time.Now().Add(15 * time.Second))
 	if msg != nil {
 		_ = c.conn.WriteJSON(msg)
@@ -96,4 +98,8 @@ func (c *Client) Disconnect(msg *Message) error {
 	c.leave <- c
 	_ = c.conn.WriteMessage(websocket.CloseMessage, []byte{})
 	return c.conn.Close()
+}
+
+func (c *Client) IsOwner() bool {
+	return c.CurrentRoom.Owner == c.Username
 }
