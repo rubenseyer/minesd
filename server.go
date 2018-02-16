@@ -13,13 +13,15 @@ import (
 	"sync"
 	"time"
 
+	"fmt"
+
 	"github.com/gorilla/websocket"
 	"github.com/teris-io/shortid"
 )
 
 var upgrader = &websocket.Upgrader{
 	HandshakeTimeout: 20 * time.Second,
-	Subprotocols:     []string{"mines", "binary"},
+	Subprotocols:     []string{"mines"},
 	CheckOrigin: func(r *http.Request) bool {
 		return true
 	},
@@ -67,6 +69,10 @@ func (s *Server) loop() {
 			} else if msg.Record != nil {
 				s.handleRecord(msg.Sender, msg.Record)
 			}
+			if msg.Chat != "" {
+				log.Printf("<%v> '%v'", msg.Sender.Username, msg.Chat)
+				s.Broadcast(&Message{Sender: msg.Sender, Chat: msg.Chat})
+			}
 		case <-s.statsticker.C:
 			s.cmutex.RLock()
 			s.rmutex.RLock()
@@ -94,6 +100,7 @@ func (s *Server) handleNewClient(c *Client, m *HelloMessage) {
 	s.cmutex.Lock()
 	if _, ok := s.clients[c.Username]; ok {
 		log.Printf("Failed to initialize new client: username taken")
+		c.Username = "" // otherwise we panic.. duh
 		_ = c.Disconnect(&Message{SrvError: "username taken"})
 		s.cmutex.Unlock()
 		return
@@ -109,14 +116,24 @@ func (s *Server) handleNewClient(c *Client, m *HelloMessage) {
 	go c.writeloop()
 
 	// TODO create client room, more data?
-	m.Room = s.newRoom(c, m.Room.RoomSettings)
-	syncmsg := &Message{Hello: m}
+	s.rmutex.RLock()
+	r, ok := s.rooms[m.Room.Id]
+	s.rmutex.RUnlock()
+	if ok {
+		c.CurrentRoom = r
+	} else {
+		m.Room = s.newRoom(c, m.Room.RoomSettings)
+	}
+	syncmsg := &Message{Chat: "Welcome to the MINES server v0.2!", Hello: m}
 	syncmsg.UserSync = s.generateUserSync(c)
 	syncmsg.RecordSync = s.generateRecordsSync()
 	c.send <- syncmsg
 
 	// broadcast connect
-	s.BroadcastExcept(&Message{UserSync: &UserSyncMessage{map[string]*Client{c.Username: c}, true}}, c)
+	s.BroadcastExcept(&Message{
+		Chat:     fmt.Sprintf("%v connected to the server.", c.Username),
+		UserSync: &UserSyncMessage{map[string]*Client{c.Username: c}, true},
+	}, c)
 }
 
 func (s *Server) generateUserSync(receiver *Client) (us *UserSyncMessage) {
@@ -145,7 +162,10 @@ func (s *Server) handleDisconnect(c *Client) {
 
 	us := s.resyncRoomOnLeave(c.CurrentRoom, c)
 	us.Presences[c.Username] = nil
-	s.BroadcastExcept(&Message{UserSync: us}, c)
+	s.BroadcastExcept(&Message{
+		Chat:     fmt.Sprintf("%v disconnected from the server.", c.Username),
+		UserSync: us,
+	}, c)
 }
 
 func (s *Server) Broadcast(msg *Message) {
@@ -277,6 +297,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) Stop() {
+	s.Broadcast(&Message{Chat: "Server is going down!"})
+
 	// Stop the event loop
 	close(s.done)
 	s.wg.Wait()

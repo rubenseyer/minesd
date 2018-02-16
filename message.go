@@ -2,7 +2,8 @@ package main
 
 type Message struct {
 	Sender   *Client `json:",omitempty"`
-	SrvError string `json:",omitempty"`
+	SrvError string  `json:",omitempty"`
+	Chat     string  `json:",omitempty"`
 
 	Hello      *HelloMessage      `json:",omitempty"`
 	UserSync   *UserSyncMessage   `json:",omitempty"`
@@ -39,12 +40,14 @@ type RoomUpdateMessage struct {
 // RoomP2PMessage is sent by the client for WebRTC signaling and
 // forwarded by the server to the client with the given username,
 // flipping the field around to contain the sender's name.
+// If the Username field is empty, the message is interpreted as
+// leaving all available rooms.
 type RoomP2PMessage struct {
-	Username  string
-	RoomId    string
-	Offer     string
-	Answer    string
-	Candidate string
+	Username  string `json:",omitempty"`
+	RoomId    string `json:",omitempty"`
+	Offer     string `json:",omitempty"`
+	Answer    string `json:",omitempty"`
+	Candidate string `json:",omitempty"`
 }
 
 // RecordMessage is sent by the client to indicate a
@@ -56,7 +59,7 @@ type RecordMessage struct {
 	Time       uint64
 }
 
-// RecordMessage is sent by the server to indicate a update
+// RecordSyncMessage is sent by the server to indicate a update
 // to the recent or best games list.
 type RecordSyncMessage struct {
 	Best    map[MinesweeperDifficulty]*Record
