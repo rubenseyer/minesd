@@ -15,6 +15,8 @@ import (
 
 	"fmt"
 
+	"net/url"
+
 	"github.com/gorilla/websocket"
 	"github.com/teris-io/shortid"
 )
@@ -23,7 +25,24 @@ var upgrader = &websocket.Upgrader{
 	HandshakeTimeout: 20 * time.Second,
 	Subprotocols:     []string{"mines"},
 	CheckOrigin: func(r *http.Request) bool {
-		return true
+		if FlagOrigin {
+			return true
+		}
+		origin := r.Header["Origin"]
+		if len(origin) == 0 {
+			return true
+		}
+		u, err := url.Parse(origin[0])
+		if err != nil {
+			return false
+		}
+		if strings.ToLower(u.Host) == strings.ToLower(r.Host) {
+			return true
+		}
+		if u.Host == "rubenseyer.github.io" {
+			return true
+		}
+		return false
 	},
 }
 

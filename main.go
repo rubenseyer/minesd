@@ -9,11 +9,14 @@ import (
 	"syscall"
 )
 
+var FlagOrigin bool
+
 func main() {
 	certFile := flag.String("cert", "", "certificate `path` for TLS")
 	keyFile := flag.String("key", "", "key `path` for TLS")
 	recordsFile := flag.String("records", "", "`path` to store records")
 	logFile := flag.String("log", "", "`path` to log file")
+	flag.BoolVar(&FlagOrigin, "no-check-origin", false, "disable origin checking")
 	flag.Parse()
 	addr := flag.Arg(0)
 	if addr == "" {
