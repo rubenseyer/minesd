@@ -231,7 +231,7 @@ func (s *Server) Start() error {
 	s.recordsLatest = ring.New(10)
 	s.LoadRecords(s.recordsFile)
 
-	s.statsticker = time.NewTicker(10 * time.Minute)
+	s.statsticker = time.NewTicker(1 * time.Minute)
 
 	if strings.HasPrefix(s.addr, "unix:") {
 		path := strings.TrimPrefix(s.addr, "unix:")
@@ -282,7 +282,11 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		leave: s.leave,
 	}
 
-	log.Printf("Received new connection from %v", c.conn.RemoteAddr())
+	if r.Header.Get("X-Real-IP") != "" {
+		log.Printf("Received new connection from %v", r.Header.Get("X-Real-IP"))
+	} else {
+		log.Printf("Received new connection from %v", c.conn.RemoteAddr())
+	}
 
 	msg, err := c.ReceiveMessage() // do this here in case we have to wait
 	if err != nil {
@@ -337,7 +341,7 @@ func (s *Server) LoadRecords(recordsFile string) {
 }
 
 func (s *Server) SaveRecords() {
-	if s.recordsFile != "" {
+	if s.recordsFile == "" {
 		return
 	}
 	recordsRaw, err := json.Marshal(s.recordsBestSolo)
@@ -347,6 +351,8 @@ func (s *Server) SaveRecords() {
 		err = ioutil.WriteFile(s.recordsFile, recordsRaw, 0666)
 		if err != nil {
 			log.Printf("Failed to write records file: %v", err)
+		} else {
+			log.Print("Records synched to disk.")
 		}
 	}
 }
