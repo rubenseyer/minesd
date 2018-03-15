@@ -98,6 +98,7 @@ func (s *Server) loop() {
 			if len(s.clients) > 0 {
 				log.Printf("Currently %v clients online in %v rooms", len(s.clients), len(s.rooms))
 			}
+			s.SaveRecords()
 			s.rmutex.RUnlock()
 			s.cmutex.RUnlock()
 		}
@@ -228,22 +229,7 @@ func (s *Server) Start() error {
 	}
 
 	s.recordsLatest = ring.New(10)
-	if s.recordsFile != "" {
-		recordsRaw, err := ioutil.ReadFile(s.recordsFile)
-		if err != nil {
-			log.Printf("Failed to read records file: %v", err)
-			s.recordsFile = ""
-		} else {
-			err = json.Unmarshal(recordsRaw, &s.recordsBestSolo)
-			if err != nil {
-				log.Printf("Failed to parse records file: %v", err)
-				s.recordsFile = ""
-			}
-		}
-	}
-	if s.recordsFile == "" {
-		s.recordsBestSolo = make(map[MinesweeperDifficulty]*Record, 4)
-	}
+	s.LoadRecords(s.recordsFile)
 
 	s.statsticker = time.NewTicker(10 * time.Minute)
 
@@ -328,15 +314,39 @@ func (s *Server) Stop() {
 	}
 	s.listener.Close() // closing listener also kills http server
 
+	s.SaveRecords()
+}
+
+func (s *Server) LoadRecords(recordsFile string) {
 	if s.recordsFile != "" {
-		recordsRaw, err := json.Marshal(s.recordsBestSolo)
+		recordsRaw, err := ioutil.ReadFile(s.recordsFile)
 		if err != nil {
-			log.Printf("Failed to generate records file: %v", err)
+			log.Printf("Failed to read records file: %v", err)
+			s.recordsFile = ""
 		} else {
-			err = ioutil.WriteFile(s.recordsFile, recordsRaw, 0666)
+			err = json.Unmarshal(recordsRaw, &s.recordsBestSolo)
 			if err != nil {
-				log.Printf("Failed to write records file: %v", err)
+				log.Printf("Failed to parse records file: %v", err)
+				s.recordsFile = ""
 			}
+		}
+	}
+	if s.recordsFile == "" {
+		s.recordsBestSolo = make(map[MinesweeperDifficulty]*Record, 4)
+	}
+}
+
+func (s *Server) SaveRecords() {
+	if s.recordsFile != "" {
+		return
+	}
+	recordsRaw, err := json.Marshal(s.recordsBestSolo)
+	if err != nil {
+		log.Printf("Failed to generate records file: %v", err)
+	} else {
+		err = ioutil.WriteFile(s.recordsFile, recordsRaw, 0666)
+		if err != nil {
+			log.Printf("Failed to write records file: %v", err)
 		}
 	}
 }
